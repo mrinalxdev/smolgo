@@ -95,12 +95,133 @@ func (jb *JitterBuffer) Push(pkt *rtp.Packet) (nack []uint16) {
 	
 	if jb.heap.Len() > 0 {
 		exp := jb.nextSeq
-		// if seqDiff(seq, exp) > 1 {
-			
-		// }
+		if seqDiff(seq, exp) > 1 {
+			miss := uint16(seqDiff(seq,exp))
+			for i := uint16(1); i < miss; i ++ {
+				nack = append(nack, (exp + i - 1) &0xFFFF)
+			}
+		}
 	}
 	
+	
+	item := &pktItem{pkt : pkt}
+	
+	heap.Push(&jb.heap, item)
+	jb.updateNextSeq()
+	return nack
+	
 }
+
+func (jb *JitterBuffer) Pop(now time.Time) (payload []byte, pts time.Duration, err error) {
+    jb.mu.Lock()
+    defer jb.mu.Unlock()
+
+    if jb.heap.Len() == 0 {
+        if jb.lastPayload == nil {
+            return nil, 0, ErrNoData
+        }
+        return jb.plcFrame(), jb.lastDur, nil
+    }
+
+    const jitterMargin = 40 * time.Millisecond
+    head := jb.heap[0].pkt
+    headPts := jb.clock.RTPToDuration(head.Header.Timestamp)
+
+    playWall := jb.clock.baseWall.Add(headPts)
+
+    if now.Sub(playWall) > jitterMargin {
+        heap.Pop(&jb.heap)
+        jb.updateNextSeq()
+        return jb.Pop(now)
+    }
+
+    if playWall.Sub(now) > jitterMargin {
+        if jb.lastPayload == nil {
+            return nil, 0, ErrUnderrun
+        }
+        return jb.plcFrame(), jb.lastDur, nil
+    }
+
+    heap.Pop(&jb.heap)
+    jb.updateNextSeq()
+
+    payload = head.Payload
+    pts = headPts
+ 
+    jb.lastPayload = append([]byte(nil), payload...)
+    jb.lastDur = time.Duration(int64(head.Header.Timestamp-jb.baseTS)*1e9/jb.clock.rate) * time.Nanosecond
+    if jb.baseTS == head.Header.Timestamp {
+        jb.lastDur = 0
+    }
+
+    return payload, pts, nil
+}
+
+
+
+// func (jb *JitterBuffer) Pop(now time.Time) (payload []byte, pts time.Duration, err error){
+// 	jb.mu.Lock()
+// 	defer jb.mu.Unlock()
+	
+// 	if jb.heap.Len() == 0 {
+// 		if jb.lastPayload == nil {
+// 			return nil, 0, ErroNoData
+// 		}
+		
+// 		return jb.plcFrame(), jb.lastDur, nil
+// 	}
+	
+	
+// 	const jitterMargin = 40 * time.Millisecond
+// 	head := jb.heap[0].pkt
+	
+// 	headPts := jb.clock.RTPToDuration(head.Header.Timestamp)
+	
+// 	playWall := jb.clock.baseWall.Add(headPts)
+	
+	
+// 	if now.Sub(playWall) > jitterMargin {
+// 		head.Pop(&jb.heap)
+// 		jb.updateNextSeq()
+		
+// 		return jb.Pop(now)
+// 	}
+	
+	
+// 	if playWall.Sub(now) > jitterMargin {
+// 		if jb.lastPayload == nil {
+// 			return nil, 0, ErrUnderrun
+// 		}
+		
+// 		return jb.plcFrame(), jb.lastDur, nil
+// 	}
+// }
+
+
+
+func (jb *JitterBuffer) plcFrame() []byte {
+    orig := jb.lastPayload
+    if len(orig) == 0 {
+        return nil
+    }
+    stretch := int(float64(len(orig)) * plcStretch)
+    plc := make([]byte, stretch)
+    copy(plc, orig)
+
+    tail := orig[len(orig)/2:]
+    for i := len(orig); i < stretch; i++ {
+        plc[i] = tail[(i-len(orig))%len(tail)]
+    }
+    for i := len(orig); i < stretch; i++ {
+        factor := float32(stretch-i) / float32(stretch-len(orig))
+        plc[i] = uint8(float32(plc[i]) * factor)
+    }
+    return plc
+}
+
+
+
+
 
 // just a smol helper function to signed 16 bit difference, wrap aware
 
@@ -117,3 +238,25 @@ func seqDiff(a, b uint16) int {
 }
 
 
+func (jb *JitterBuffer) updateNextSeq() {
+	if jb.heap.Len() == 0 {
+		return
+	}
+	
+	
+	var highest uint16
+	
+	for i := 0; i < jb.heap.Len(); i++ {
+		cur := jb.heap[i].pkt.Header.SequenceNumber
+		
+		if i == 0 {
+			highest = cur
+		} else if seqDiff(cur, highest) != i + 1 {
+			break
+		}
+		
+		highest = cur
+	}
+	
+	jb.nextSeq = (highest + 1) & 0xFFFF
+}
