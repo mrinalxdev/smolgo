@@ -1,6 +1,7 @@
 package avsyncer
 
 import (
+	"container/heap"
 	"sync"
 	"time"
 
@@ -113,49 +114,97 @@ func (jb *JitterBuffer) Push(pkt *rtp.Packet) (nack []uint16) {
 }
 
 func (jb *JitterBuffer) Pop(now time.Time) (payload []byte, pts time.Duration, err error) {
-    jb.mu.Lock()
-    defer jb.mu.Unlock()
+	jb.mu.Lock()
+	defer jb.mu.Unlock()
 
-    if jb.heap.Len() == 0 {
-        if jb.lastPayload == nil {
-            return nil, 0, ErrNoData
-        }
-        return jb.plcFrame(), jb.lastDur, nil
-    }
+	if jb.heap.Len() == 0 {
+		if jb.lastPayload == nil {
+			return nil, 0, ErrNoData
+		}
+		return jb.plcFrame(), jb.lastDur, nil
+	}
 
-    const jitterMargin = 40 * time.Millisecond
-    head := jb.heap[0].pkt
-    headPts := jb.clock.RTPToDuration(head.Header.Timestamp)
+	const jitterMargin = 40 * time.Millisecond
+	head := jb.heap[0].pkt
+	headPts := jb.clock.RTPToDuration(head.Header.Timestamp)
 
-    playWall := jb.clock.baseWall.Add(headPts)
+	playWall := jb.clock.baseWall.Add(headPts)
 
-    if now.Sub(playWall) > jitterMargin {
-        heap.Pop(&jb.heap)
-        jb.updateNextSeq()
-        return jb.Pop(now)
-    }
+	if now.Sub(playWall) > jitterMargin {
+		heap.Pop(&jb.heap)
+		jb.updateNextSeq()
+		return jb.Pop(now) // recurse once
+	}
 
-    if playWall.Sub(now) > jitterMargin {
-        if jb.lastPayload == nil {
-            return nil, 0, ErrUnderrun
-        }
-        return jb.plcFrame(), jb.lastDur, nil
-    }
+	if playWall.Sub(now) > jitterMargin {
+		if jb.lastPayload == nil {
+			return nil, 0, ErrUnderrun
+		}
+		return jb.plcFrame(), jb.lastDur, nil
+	}
 
-    heap.Pop(&jb.heap)
-    jb.updateNextSeq()
+	// emit real packet
+	heap.Pop(&jb.heap)
+	jb.updateNextSeq()
 
-    payload = head.Payload
-    pts = headPts
- 
-    jb.lastPayload = append([]byte(nil), payload...)
-    jb.lastDur = time.Duration(int64(head.Header.Timestamp-jb.baseTS)*1e9/jb.clock.rate) * time.Nanosecond
-    if jb.baseTS == head.Header.Timestamp {
-        jb.lastDur = 0
-    }
+	payload = head.Payload
+	pts = headPts
 
-    return payload, pts, nil
+	// remember for PLC
+	jb.lastPayload = append([]byte(nil), payload...)
+
+	// duration of this frame = (timestamp 1e9 * (ts - baseTS) ) / rate
+	deltaTS := int64(head.Header.Timestamp) - int64(jb.baseTS)
+	nanos := deltaTS * 1_000_000_000 / int64(jb.clock.rate)
+	jb.lastDur = time.Duration(nanos) * time.Nanosecond
+
+	return payload, pts, nil
 }
+
+// func (jb *JitterBuffer) Pop(now time.Time) (payload []byte, pts time.Duration, err error) {
+//     jb.mu.Lock()
+//     defer jb.mu.Unlock()
+
+//     if jb.heap.Len() == 0 {
+//         if jb.lastPayload == nil {
+//             return nil, 0, ErrNoData
+//         }
+//         return jb.plcFrame(), jb.lastDur, nil
+//     }
+
+//     const jitterMargin = 40 * time.Millisecond
+//     head := jb.heap[0].pkt
+//     headPts := jb.clock.RTPToDuration(head.Header.Timestamp)
+
+//     playWall := jb.clock.baseWall.Add(headPts)
+
+//     if now.Sub(playWall) > jitterMargin {
+//         heap.Pop(&jb.heap)
+//         jb.updateNextSeq()
+//         return jb.Pop(now)
+//     }
+
+//     if playWall.Sub(now) > jitterMargin {
+//         if jb.lastPayload == nil {
+//             return nil, 0, ErrUnderrun
+//         }
+//         return jb.plcFrame(), jb.lastDur, nil
+//     }
+
+//     heap.Pop(&jb.heap)
+//     jb.updateNextSeq()
+
+//     payload = head.Payload
+//     pts = headPts
+ 
+//     jb.lastPayload = append([]byte(nil), payload...)
+//     // jb.lastDur = time.Duration(int64(head.Header.Timestamp-jb.baseTS)*1e9/jb.clock.rate) * time.Nanosecond
+//     if jb.baseTS == head.Header.Timestamp {
+//         jb.lastDur = 0
+//     }
+
+//     return payload, pts, nil
+// }
 
 
 

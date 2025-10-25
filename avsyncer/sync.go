@@ -29,8 +29,7 @@ func NewSyncLayer() *SyncLayer {
     }
 }
 
-// IngestRTP routes a packet to the proper media buffer and returns
-// any RTCP NACKs that should be sent upstream.
+
 func (s *SyncLayer) IngestRTP(pkt *rtp.Packet) []rtcp.Packet {
     var jb *JitterBuffer
     switch pkt.Header.PayloadType {

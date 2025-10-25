@@ -35,6 +35,11 @@ func (c *Clock) RTPToDuration(ts uint32) time.Duration{
 	}
 	
 	
-	// return time.Duration(delta*1e9/c.rate) * time.Nanosecond
-	return time.Duration(delta*1e9/c.rate) * time.Nanosecond
+	// return time.Duration(delta*1e9/c.rate) * time.Nanosecond (time conversion error)
+	// 
+	// a little change here 1e9 --> 1_000_000_000 (int64 literal) so we can write 
+	// delta * 1e9 / c.rate → delta * 1_000_000_000 / int64(c.rate)
+	// and result cast to time.Duration via time.Duration(nanos) * time.Nanosecond
+	nanos := delta * 1_000_000_000 / int64(c.rate)
+	return time.Duration(nanos) * time.Nanosecond
 }
