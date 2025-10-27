@@ -12,12 +12,12 @@ import "time"
  */
 
 type CongestionAlgorithm interface {
-	OnAck(bytes int, metrices AlgorithmMetrices)
-	OnLoss(metrics AlgorithmMetrices)
+	OnAck(bytes int, metrices AlgorithmMetrics)
+	OnLoss(metrics AlgorithmMetrics)
 	GetWindowSize()
 }
 
-type AlgorithmMetrices struct {
+type AlgorithmMetrics struct {
 	WindowSize float64
 	CurrentRTT time.Duration
 	BaseRTT time.Duration
@@ -43,3 +43,39 @@ func NewBBRAlgorithm() *BBRAlgorithm {
 }
 
 
+/*
+ * So for the bbra algo here is a small skim up for the following
+ * - update min rtt
+ * - calculate instantaneous bandwidth (like we can go bytes per second)
+ * - during the calculation we can perform two things which
+ * - update bandwidth window
+ * - update max bandwidth
+ */
+ 
+ func (b *BBRAlgorithm) OnAck(bytes int, metrics AlgorithmMetrics) {
+	if metrics.CurrentRTT > 0 && (metrics.CurrentRTT < b.minRTT || b.minRTT == 0) {
+		b.minRTT = metrics.CurrentRTT
+	}
+	if metrics.CurrentRTT > 0 {
+		instantBW := float64(bytes) / metrics.CurrentRTT.Seconds()
+		b.bwWindow[b.bwIndex] = instantBW
+		b.bwIndex = (b.bwIndex + 1) % len(b.bwWindow)
+		b.updateMaxBandwidth()
+	}
+ }
+
+ func (b *BBRAlgorithm) updateMaxBandwidth() {
+	var maxBW float64
+	for _, bw := range b.bwWindow {
+		if bw > maxBW {
+			maxBW = bw
+		}
+	}
+	
+	// Smooth the max bandwidth estimate
+	if b.maxBandwidth == 0 {
+		b.maxBandwidth = maxBW
+	} else {
+		b.maxBandwidth = 0.9*b.maxBandwidth + 0.1*maxBW
+	}
+ }
